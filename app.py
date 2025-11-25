@@ -316,7 +316,7 @@ def run_spotdl(url, download_id):
         import time
         start_time = time.time()
 
-        cmd = ["spotdl", url, "--output", MUSIC_DIR]
+        cmd = ["spotdl", url, "--output", MUSIC_DIR, "--add-unavailable"]
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,

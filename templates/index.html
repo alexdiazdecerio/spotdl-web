@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpotDL Web - Descarga de Spotify</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1DB954 0%, #191414 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 800px;
+            width: 100%;
+        }
+        
+        h1 {
+            color: #1DB954;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        
+        input[type="text"] {
+            flex: 1;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #1DB954;
+        }
+        
+        button {
+            padding: 15px 30px;
+            background: #1DB954;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #1ed760;
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .downloads-list {
+            margin-top: 30px;
+        }
+        
+        .download-item {
+            background: #f8f8f8;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            border-left: 5px solid #1DB954;
+        }
+        
+        .download-url {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+            word-break: break-all;
+        }
+        
+        .download-status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .status-queued { background: #ffd700; color: #000; }
+        .status-downloading { background: #1DB954; color: white; }
+        .status-creating_playlist { background: #0099ff; color: white; }
+        .status-completed { background: #28a745; color: white; }
+        .status-completed_no_playlist { background: #ff9800; color: white; }
+        .status-error { background: #dc3545; color: white; }
+
+        .playlist-info {
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 10px 15px;
+            margin-top: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            color: #2e7d32;
+        }
+
+        .playlist-error {
+            background: #ffebee;
+            border-left: 4px solid #f44336;
+            padding: 10px 15px;
+            margin-top: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            color: #c62828;
+        }
+        
+        .download-log {
+            background: #000;
+            color: #0f0;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            margin-top: 10px;
+            word-wrap: break-word;
+        }
+        
+        .empty-state {
+            text-align: center;
+            color: #999;
+            padding: 40px;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎵 SpotDL Web</h1>
+        <p class="subtitle">Descarga playlists y canciones de Spotify a tu Navidrome</p>
+        
+        <div class="input-group">
+            <input type="text" id="urlInput" placeholder="Pega aquí la URL de Spotify (playlist, álbum, canción...)" />
+            <button id="downloadBtn" onclick="startDownload()">Descargar</button>
+        </div>
+        
+        <div class="downloads-list" id="downloadsList">
+            <div class="empty-state">
+                No hay descargas todavía. Pega una URL de Spotify arriba para empezar.
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let updateInterval;
+        
+        function startDownload() {
+            const url = document.getElementById('urlInput').value.trim();
+            if (!url) {
+                alert('Por favor, introduce una URL de Spotify');
+                return;
+            }
+            
+            const btn = document.getElementById('downloadBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>';
+            
+            fetch('/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('urlInput').value = '';
+                btn.disabled = false;
+                btn.textContent = 'Descargar';
+                updateDownloadsList();
+                if (!updateInterval) {
+                    updateInterval = setInterval(updateDownloadsList, 2000);
+                }
+            })
+            .catch(error => {
+                alert('Error al iniciar la descarga: ' + error);
+                btn.disabled = false;
+                btn.textContent = 'Descargar';
+            });
+        }
+        
+        // Store references to download items
+        let downloadItems = {};
+
+        function updateDownloadsList() {
+            fetch('/list')
+                .then(response => response.json())
+                .then(downloads => {
+                    const container = document.getElementById('downloadsList');
+
+                    if (Object.keys(downloads).length === 0) {
+                        container.innerHTML = '<div class="empty-state">No hay descargas todavía.</div>';
+                        downloadItems = {};
+                        return;
+                    }
+
+                    // Separar descargas activas de completadas
+                    const activeDownloads = [];
+                    const completedDownloads = [];
+
+                    Object.entries(downloads).forEach(([id, download]) => {
+                        if (['downloading', 'creating_playlist'].includes(download.status)) {
+                            activeDownloads.push([id, download]);
+                        } else {
+                            completedDownloads.push([id, download]);
+                        }
+                    });
+
+                    // Mostrar activas primero (en orden), luego completadas (en orden inverso)
+                    const orderedDownloads = [...activeDownloads, ...completedDownloads.reverse()];
+
+                    // Get currently visible items
+                    const visibleIds = new Set(orderedDownloads.map(([id]) => id));
+
+                    // Remove items that are no longer in the list
+                    for (let id in downloadItems) {
+                        if (!visibleIds.has(id)) {
+                            downloadItems[id].remove();
+                            delete downloadItems[id];
+                        }
+                    }
+
+                    // Add or update items
+                    let lastElement = null;
+                    orderedDownloads.forEach(([id, download]) => {
+                        const statusClass = `status-${download.status}`;
+                        const statusText = {
+                            'queued': 'En cola',
+                            'downloading': 'Descargando...',
+                            'creating_playlist': 'Creando playlist...',
+                            'completed': 'Completado ✓',
+                            'completed_no_playlist': 'Descargado (sin playlist)',
+                            'error': 'Error'
+                        }[download.status] || 'Desconocido';
+
+                        let playlistInfo = '';
+                        if (download.playlist_created) {
+                            playlistInfo = `<div class="playlist-info">✓ Playlist creada: <strong>${download.playlist_name}</strong></div>`;
+                        } else if (download.playlist_error) {
+                            playlistInfo = `<div class="playlist-error">✗ ${download.playlist_error}</div>`;
+                        }
+
+                        if (!downloadItems[id]) {
+                            // Create new item if it doesn't exist
+                            const item = document.createElement('div');
+                            item.id = `download-${id}`;
+                            item.className = 'download-item';
+                            container.appendChild(item);
+                            downloadItems[id] = item;
+                        }
+
+                        // Update existing item
+                        const item = downloadItems[id];
+                        item.className = 'download-item';
+
+                        // Build the new HTML
+                        const newHTML = `
+                            <div class="download-url">${download.url}</div>
+                            <span class="download-status ${statusClass}">${statusText}</span>
+                            ${playlistInfo}
+                            ${download.log ? `<div class="download-log" id="log-${id}">${download.log}</div>` : ''}
+                        `;
+
+                        // Only update if the content changed
+                        if (item.innerHTML !== newHTML) {
+                            const logElement = item.querySelector(`#log-${id}`);
+                            const wasAtBottom = logElement ? (logElement.scrollTop >= logElement.scrollHeight - logElement.clientHeight - 10) : true;
+
+                            item.innerHTML = newHTML;
+
+                            // Auto-scroll if was at bottom, otherwise keep position
+                            const newLogElement = item.querySelector(`#log-${id}`);
+                            if (newLogElement && wasAtBottom) {
+                                // Scroll to bottom on next frame
+                                requestAnimationFrame(() => {
+                                    newLogElement.scrollTop = newLogElement.scrollHeight;
+                                });
+                            }
+                        }
+                    });
+
+                    // If container is empty, show empty state
+                    if (container.children.length === 0) {
+                        container.innerHTML = '<div class="empty-state">No hay descargas todavía.</div>';
+                        downloadItems = {};
+                    }
+                });
+        }
+        
+        // Actualizar cada 3 segundos (menos parpadeos)
+        updateInterval = setInterval(updateDownloadsList, 3000);
+        updateDownloadsList();
+        
+        // Permitir Enter en el input
+        document.getElementById('urlInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                startDownload();
+            }
+        });
+    </script>
+</body>
+</html>

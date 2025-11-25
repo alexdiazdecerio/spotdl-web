@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  spotdl-web:
+    build: .
+    container_name: spotdl-web
+    user: "1000:1000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - /srv/dev-disk-by-uuid-0d591193-ac85-4122-a658-e444b0b37e0a/Musica:/music
+      - ./spotdl-cache:/home/spotdl/.cache
+      - ./spotdl-config:/home/spotdl/.config
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Madrid
+      - HOME=/home/spotdl
+    networks:
+      - music-stack_default
+
+networks:
+  music-stack_default:
+    external: true

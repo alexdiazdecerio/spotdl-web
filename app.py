@@ -189,19 +189,18 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=
         print(f"[M3U] Creating M3U playlist: {playlist_name}", flush=True)
         print(f"[M3U] Newly downloaded files: {len(downloaded_files)} files", flush=True)
 
-        # Get all currently available audio files in /music/
-        # This is the most reliable approach - use ALL files that exist
-        # If SpotDL failed but the files already exist, they'll still be included
-        all_available_files = find_all_available_audio_files()
+        # Use only the files that were downloaded in this session
+        # If downloaded_files is empty, fall back to all available files
+        if downloaded_files and len(downloaded_files) > 0:
+            files_to_include = downloaded_files
+            print(f"[M3U] Using {len(files_to_include)} newly downloaded files for playlist", flush=True)
+        else:
+            # Fallback: if no files detected as downloaded, use all available
+            # This handles cases where file timestamps don't match expectations
+            all_available_files = find_all_available_audio_files()
+            files_to_include = all_available_files
+            print(f"[M3U] No recently downloaded files detected, using all {len(files_to_include)} available files", flush=True)
 
-        # Always use all available files for the playlist
-        # This ensures:
-        # 1. Playlists are complete even if SpotDL partially failed
-        # 2. Retries automatically complete playlists
-        # 3. No loss of songs even if download was interrupted
-        files_to_include = all_available_files
-
-        print(f"[M3U] Using all {len(files_to_include)} available audio files in library", flush=True)
         print(f"[M3U] Total files to include in playlist: {len(files_to_include)}", flush=True)
 
         # Create M3U content with file paths
@@ -256,20 +255,39 @@ def extract_playlist_info(output_lines):
     downloaded_files = []
 
     for line in output_lines:
-        # Try to detect playlist name
-        if "Downloading" in line and "playlist" in line.lower():
-            match = re.search(r"'([^']+)'", line)
-            if match:
-                playlist_name = match.group(1)
+        # Try to detect playlist name - look for patterns like "Found X songs in PlaylistName (Playlist)"
+        match = re.search(r'Found\s+\d+\s+songs?\s+in\s+(.+?)\s+\((Playlist|Album)\)', line)
+        if match:
+            playlist_name = match.group(1).strip()
+            print(f"[EXTRACT] Found playlist name: {playlist_name}", flush=True)
 
-        # Try to detect downloaded files
+        # Try to detect downloaded files from various SpotDL output formats
+        # Look for patterns like:
+        # - "Downloaded: songname.mp3"
+        # - "Saved: songname.flac"
+        # - "✓ songname.mp3"
+        # - File paths in output
+
+        # Pattern 1: "Downloaded:" or "Saved:" format
         if "Downloaded" in line or "Saved" in line:
-            # Extract filename if it's in the line
-            if ".mp3" in line or ".m4a" in line or ".flac" in line:
-                parts = line.split()
-                for part in parts:
-                    if part.endswith(('.mp3', '.m4a', '.flac', '.wav')):
-                        downloaded_files.append(part)
+            # Try to extract filename with extension
+            match = re.search(r'(?:Downloaded|Saved)[\s:]+(.+\.(?:mp3|m4a|flac|wav|ogg))', line, re.IGNORECASE)
+            if match:
+                filename = match.group(1).strip()
+                # Get just the filename, not the full path
+                filename = os.path.basename(filename)
+                if filename not in downloaded_files:
+                    downloaded_files.append(filename)
+                    print(f"[EXTRACT] Found downloaded file: {filename}", flush=True)
+
+        # Pattern 2: Lines with checkmark and filename (✓ filename.ext)
+        match = re.search(r'✓\s+(.+\.(?:mp3|m4a|flac|wav|ogg))', line, re.IGNORECASE)
+        if match:
+            filename = match.group(1).strip()
+            filename = os.path.basename(filename)
+            if filename not in downloaded_files:
+                downloaded_files.append(filename)
+                print(f"[EXTRACT] Found checked file: {filename}", flush=True)
 
     return playlist_name, downloaded_files
 
@@ -394,24 +412,23 @@ def run_spotdl(url, download_id):
             if "playlist" in url.lower() or "album" in url.lower():
                 downloads[download_id]["status"] = "creating_playlist"
 
-                # Extract playlist/album name from output first (has the real name)
-                playlist_name = "Downloaded Content"
-                for line in output:
-                    # Look for the playlist or album name in the output
-                    # Format: "Found X songs in PlaylistName (Playlist)" or "Found X songs in AlbumName (Album)"
-                    match = re.search(r'in\s+(.+?)\s+\((Playlist|Album)\)', line)
-                    if match:
-                        playlist_name = match.group(1).strip()
-                        break
+                # Extract playlist/album name and downloaded files from SpotDL output
+                playlist_name, output_downloaded_files = extract_playlist_info(output)
+                if not playlist_name:
+                    playlist_name = "Downloaded Content"
 
-                # Find recently modified files (files downloaded during this session)
-                recently_modified = find_recently_modified_files(start_time)
-                downloaded_filenames = [item['filename'] for item in recently_modified] if recently_modified else []
+                # If extract_playlist_info found files in output, use those
+                # Otherwise try to detect from file timestamps
+                if output_downloaded_files and len(output_downloaded_files) > 0:
+                    downloaded_filenames = output_downloaded_files
+                    print(f"[PLAYLIST] Extracted {len(downloaded_filenames)} files from SpotDL output", flush=True)
+                else:
+                    # Fallback: Find recently modified files
+                    recently_modified = find_recently_modified_files(start_time)
+                    downloaded_filenames = [item['filename'] for item in recently_modified] if recently_modified else []
+                    print(f"[PLAYLIST] Found {len(downloaded_filenames)} recently modified files", flush=True)
 
-                # Always try to create/update playlist for playlists and albums
-                # Even if no new files were downloaded, the M3U might exist from previous attempts
-                # and we want to ensure it's complete
-                print(f"[PLAYLIST] Found {len(downloaded_filenames)} new files, attempting playlist creation...", flush=True)
+                print(f"[PLAYLIST] Creating playlist '{playlist_name}' with {len(downloaded_filenames)} files...", flush=True)
 
                 # Start Navidrome scan and wait for it to complete
                 downloads[download_id]["log"] += "\nEscaneando biblioteca de Navidrome..."

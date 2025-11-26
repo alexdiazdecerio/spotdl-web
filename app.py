@@ -151,23 +151,101 @@ def search_song_in_navidrome(artist, title, retry_count=0):
         print(f"[SEARCH ERROR] Traceback: {traceback.format_exc()}", flush=True)
         return None
 
-def create_playlist_in_navidrome(playlist_name, downloaded_files):
+def extract_all_songs_from_spotdl_output(output_lines):
+    """Extract all songs from SpotDL output, both downloaded and skipped"""
+    songs = []
+
+    try:
+        # SpotDL outputs lines like:
+        # "Downloading: Artist - Title"
+        # "Skipping: Artist - Title (already exists)"
+        # "Downloaded: /path/to/file.mp3"
+
+        for line in output_lines:
+            line_lower = line.lower()
+
+            # Match downloaded or skipped songs
+            if "downloading:" in line_lower or "skipping:" in line_lower or "downloaded" in line_lower:
+                # Try to extract filename if it's a path
+                if ".mp3" in line or ".m4a" in line or ".flac" in line or ".wav" in line or ".ogg" in line:
+                    # Extract just the filename from the full path
+                    parts = line.split('/')
+                    filename = parts[-1].strip()
+                    if filename and filename not in songs:
+                        songs.append(filename)
+                        print(f"[EXTRACT] Found song: {filename}", flush=True)
+
+        print(f"[EXTRACT] Extracted {len(songs)} unique songs from SpotDL output", flush=True)
+        return songs
+    except Exception as e:
+        print(f"[EXTRACT ERROR] {e}", flush=True)
+        return []
+
+def find_songs_in_directory(song_names):
+    """Find actual audio files matching the song names"""
+    found_files = []
+    audio_extensions = ('.mp3', '.m4a', '.flac', '.wav', '.ogg')
+
+    try:
+        # Get all files in music directory
+        all_files = []
+        for root, dirs, files in os.walk(MUSIC_DIR):
+            for file in files:
+                if file.lower().endswith(audio_extensions):
+                    all_files.append(file)
+
+        # Match requested songs
+        for song_name in song_names:
+            # Direct match
+            if song_name in all_files:
+                found_files.append(song_name)
+            else:
+                # Try fuzzy matching (in case filename changed slightly)
+                song_base = os.path.splitext(song_name)[0].lower()
+                for existing_file in all_files:
+                    existing_base = os.path.splitext(existing_file)[0].lower()
+                    if existing_base == song_base:
+                        found_files.append(existing_file)
+                        break
+
+        print(f"[FIND] Matched {len(found_files)} songs from requested {len(song_names)}", flush=True)
+        return found_files
+    except Exception as e:
+        print(f"[FIND ERROR] {e}", flush=True)
+        return []
+
+def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=None):
     """Create M3U playlist file and let Navidrome import it automatically"""
     try:
         import os
 
         print(f"[M3U] Creating M3U playlist: {playlist_name}", flush=True)
-        print(f"[M3U] Files: {downloaded_files}", flush=True)
+        print(f"[M3U] Newly downloaded files: {len(downloaded_files)} files", flush=True)
+
+        # Try to extract all songs from SpotDL output (both new and skipped)
+        all_requested_songs = []
+        if spotdl_output:
+            all_requested_songs = extract_all_songs_from_spotdl_output(spotdl_output)
+
+        # If we extracted songs from output, use those; otherwise use only newly downloaded
+        if len(all_requested_songs) > 0:
+            print(f"[M3U] Using {len(all_requested_songs)} songs extracted from SpotDL output", flush=True)
+            files_to_include = find_songs_in_directory(all_requested_songs)
+        else:
+            print(f"[M3U] Using {len(downloaded_files)} newly downloaded files", flush=True)
+            files_to_include = downloaded_files
+
+        print(f"[M3U] Total files to include in playlist: {len(files_to_include)}", flush=True)
 
         # Create M3U content with file paths
         m3u_lines = ['#EXTM3U']
 
-        for filename in downloaded_files:
+        for filename in files_to_include:
             # Add the filename as a relative path in the M3U
             m3u_lines.append(filename)
 
         m3u_content = '\n'.join(m3u_lines)
-        print(f"[M3U] M3U content:\n{m3u_content}", flush=True)
+        print(f"[M3U] M3U playlist will contain {len(files_to_include)} songs", flush=True)
 
         # Generate M3U filename - sanitize playlist name for filename
         safe_name = "".join(c for c in playlist_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
@@ -179,14 +257,14 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files):
         with open(m3u_path, 'w', encoding='utf-8') as f:
             f.write(m3u_content)
 
-        print(f"[M3U] ✓ M3U file created successfully", flush=True)
+        print(f"[M3U] ✓ M3U file created successfully with {len(files_to_include)} songs", flush=True)
 
         # Trigger Navidrome scan to import the M3U (runs in background)
         print(f"[M3U] Triggering Navidrome scan to import M3U...", flush=True)
         start_navidrome_scan()
 
         print(f"[M3U] ✓✓✓ SUCCESS! Playlist '{playlist_name}' will be created from M3U", flush=True)
-        return True, f"Playlist '{playlist_name}' created (M3U file: {m3u_filename})"
+        return True, f"Playlist '{playlist_name}' created (M3U file: {m3u_filename}) - {len(files_to_include)} songs"
 
     except Exception as e:
         print(f"[M3U ERROR] Exception: {str(e)}", flush=True)
@@ -217,7 +295,7 @@ def extract_playlist_info(output_lines):
 
     return playlist_name, downloaded_files
 
-def find_recently_modified_files(since_time, limit_count=100):
+def find_recently_modified_files(since_time, limit_count=None):
     """Find music files modified after the given time"""
     from pathlib import Path
     import time
@@ -246,6 +324,8 @@ def find_recently_modified_files(since_time, limit_count=100):
         # Sort by modification time, most recent first
         recently_modified.sort(key=lambda x: x['mtime'], reverse=True)
         print(f"[FILES] Total files found: {len(recently_modified)}", flush=True)
+        if limit_count is None:
+            return recently_modified
         return recently_modified[:limit_count]
     except Exception as e:
         print(f"[FILES ERROR] {e}", flush=True)
@@ -359,7 +439,7 @@ def run_spotdl(url, download_id):
                     downloads[download_id]["log"] += "\nEscaneo completado. Creando playlist..."
 
                     # Try to create playlist with downloaded files
-                    success, message = create_playlist_in_navidrome(playlist_name, downloaded_filenames)
+                    success, message = create_playlist_in_navidrome(playlist_name, downloaded_filenames, output)
 
                     if success:
                         downloads[download_id]["status"] = "completed"

@@ -20,6 +20,19 @@ app = Flask(__name__)
 MUSIC_DIR = "/music"
 downloads = {}
 
+# Verify that MUSIC_DIR is writable on startup
+try:
+    if not os.path.exists(MUSIC_DIR):
+        print(f"[STARTUP] ERROR: MUSIC_DIR does not exist: {MUSIC_DIR}", flush=True)
+    elif not os.access(MUSIC_DIR, os.W_OK):
+        print(f"[STARTUP] ERROR: MUSIC_DIR is not writable: {MUSIC_DIR}", flush=True)
+        stat = os.stat(MUSIC_DIR)
+        print(f"[STARTUP] Directory permissions: {oct(stat.st_mode)}, UID: {stat.st_uid}, GID: {stat.st_gid}", flush=True)
+    else:
+        print(f"[STARTUP] ✓ MUSIC_DIR is writable: {MUSIC_DIR}", flush=True)
+except Exception as e:
+    print(f"[STARTUP] ERROR checking MUSIC_DIR: {str(e)}", flush=True)
+
 # Navidrome configuration
 NAVIDROME_URL = "http://navidrome:4533"
 NAVIDROME_USER = "alex"
@@ -201,6 +214,10 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=
         m3u_content = '\n'.join(m3u_lines)
         print(f"[M3U] M3U playlist will contain {len(files_to_include)} songs", flush=True)
 
+        # Define M3U file path and filename
+        m3u_filename = f"{playlist_name}.m3u"
+        m3u_path = os.path.join(MUSIC_DIR, m3u_filename)
+
         # Write M3U file to music directory
         print(f"[M3U] Writing M3U file to: {m3u_path}", flush=True)
         with open(m3u_path, 'w', encoding='utf-8') as f:
@@ -215,6 +232,18 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=
         print(f"[M3U] ✓✓✓ SUCCESS! Playlist '{playlist_name}' will be created from M3U", flush=True)
         return True, f"Playlist '{playlist_name}' created (M3U file: {m3u_filename}) - {len(files_to_include)} songs"
 
+    except PermissionError as e:
+        print(f"[M3U ERROR] Permission Denied: {str(e)}", flush=True)
+        print(f"[M3U ERROR] Check MUSIC_DIR permissions: {MUSIC_DIR}", flush=True)
+        import os
+        try:
+            stat = os.stat(MUSIC_DIR)
+            print(f"[M3U ERROR] Directory mode: {oct(stat.st_mode)}, UID: {stat.st_uid}, GID: {stat.st_gid}", flush=True)
+        except:
+            pass
+        import traceback
+        print(f"[M3U ERROR] Traceback: {traceback.format_exc()}", flush=True)
+        return False, f"Permission denied writing to {MUSIC_DIR}: {str(e)}"
     except Exception as e:
         print(f"[M3U ERROR] Exception: {str(e)}", flush=True)
         import traceback

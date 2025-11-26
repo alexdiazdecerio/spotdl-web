@@ -287,19 +287,17 @@ def extract_playlist_info(output_lines):
                 print(f"[EXTRACT] Found existing song: {artist} - {title}", flush=True)
             continue
 
-        # Pattern 3: Direct "artist - title" lines (without prefix)
-        # But only if line looks like a song (has " - " and no special chars at start)
-        if ' - ' in line and not line.startswith(('│', '├', '└', '[', ' ', '\t')):
-            match = re.search(r'^(.+?)\s+-\s+(.+?)(?:\s+\(|$)', line)
+        # Pattern 3: "Skipping artist - title" lines (when file already exists)
+        if 'Skipping' in line and ' - ' in line:
+            match = re.search(r'Skipping\s+(.+?)\s+-\s+(.+?)(?:\s+\(|$)', line)
             if match:
                 artist = match.group(1).strip()
                 title = match.group(2).strip()
-                # Skip if it looks like a path or URL
-                if '/' not in artist and '\\' not in artist:
-                    song_info = (artist, title)
-                    if song_info not in song_info_list:
-                        song_info_list.append(song_info)
-                        print(f"[EXTRACT] Found song from line: {artist} - {title}", flush=True)
+                song_info = (artist, title)
+                if song_info not in song_info_list:
+                    song_info_list.append(song_info)
+                    print(f"[EXTRACT] Found skipped song: {artist} - {title}", flush=True)
+            continue
 
     return playlist_name, song_info_list
 
@@ -328,26 +326,51 @@ def find_songs_by_info(song_info_list):
         # SpotDL typically saves files as "Artist - Title.mp3"
         # Try different combinations to find the file
 
-        # Pattern 1: "Artist - Title.ext"
+        found_match = False
+
+        # Pattern 1: Exact match "Artist - Title.ext"
         for ext in audio_extensions:
             filename = f"{artist} - {title}{ext}"
             filename_lower = filename.lower()
             if filename_lower in all_files:
                 found_files.append(all_files[filename_lower])
-                print(f"[SEARCH] ✓ Found: {filename}", flush=True)
+                print(f"[SEARCH] ✓ Found (exact): {all_files[filename_lower]}", flush=True)
+                found_match = True
                 break
 
-        # Pattern 2: Try fuzzy match if exact doesn't work
-        # Look for files containing both artist and title
-        if not any(f.lower() == f"{artist} - {title}".lower() for f in found_files):
-            artist_lower = artist.lower()
-            title_lower = title.lower()
-            for file_lower, original_file in all_files.items():
-                if artist_lower in file_lower and title_lower in file_lower:
-                    if original_file not in found_files:
-                        found_files.append(original_file)
-                        print(f"[SEARCH] ✓ Found (fuzzy): {original_file}", flush=True)
-                        break
+        if found_match:
+            continue
+
+        # Pattern 2: Fuzzy match - find files containing both artist and title
+        # This handles cases where SpotDL output has shortened titles
+        artist_lower = artist.lower()
+        title_lower = title.lower()
+
+        # Split title into words for better matching
+        title_words = [w for w in title_lower.split() if len(w) > 2]  # Skip short words like "a", "the"
+
+        best_match = None
+        best_score = 0
+
+        for file_lower, original_file in all_files.items():
+            if original_file in found_files:
+                continue
+
+            # Check if artist is in filename
+            if artist_lower not in file_lower:
+                continue
+
+            # Count how many title words are in the filename
+            score = sum(1 for word in title_words if word in file_lower)
+
+            # If we find a file with artist and most title words, it's probably the right one
+            if score > best_score and score >= len(title_words) * 0.5:  # At least 50% of words
+                best_score = score
+                best_match = original_file
+
+        if best_match:
+            found_files.append(best_match)
+            print(f"[SEARCH] ✓ Found (fuzzy {best_score}/{len(title_words)}): {best_match}", flush=True)
 
     print(f"[SEARCH] Total found: {len(found_files)}/{len(song_info_list)} songs", flush=True)
     return found_files

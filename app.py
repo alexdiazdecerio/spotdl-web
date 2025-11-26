@@ -388,9 +388,21 @@ def run_spotdl(url, download_id):
         downloads[download_id]["status"] = "downloading"
         downloads[download_id]["started"] = datetime.now().isoformat()
 
-        # Record the time before downloading
+        # Record the files BEFORE downloading
         import time
         start_time = time.time()
+
+        # Get a snapshot of current files before download
+        existing_files_before = set()
+        try:
+            audio_extensions = ('.mp3', '.m4a', '.flac', '.wav', '.ogg')
+            for root, dirs, files in os.walk(MUSIC_DIR):
+                for file in files:
+                    if file.lower().endswith(audio_extensions):
+                        existing_files_before.add(file)
+            print(f"[SNAPSHOT] Found {len(existing_files_before)} files BEFORE download", flush=True)
+        except Exception as e:
+            print(f"[SNAPSHOT] Error taking snapshot: {e}", flush=True)
 
         cmd = ["spotdl", url, "--output", MUSIC_DIR, "--add-unavailable", "--max-retries", "10", "--threads", "2"]
         process = subprocess.Popen(
@@ -412,21 +424,39 @@ def run_spotdl(url, download_id):
             if "playlist" in url.lower() or "album" in url.lower():
                 downloads[download_id]["status"] = "creating_playlist"
 
-                # Extract playlist/album name and downloaded files from SpotDL output
+                # Extract playlist/album name from SpotDL output
                 playlist_name, output_downloaded_files = extract_playlist_info(output)
                 if not playlist_name:
                     playlist_name = "Downloaded Content"
 
-                # If extract_playlist_info found files in output, use those
-                # Otherwise try to detect from file timestamps
-                if output_downloaded_files and len(output_downloaded_files) > 0:
+                # Compare files AFTER download with files BEFORE download to find new files
+                existing_files_after = set()
+                try:
+                    audio_extensions = ('.mp3', '.m4a', '.flac', '.wav', '.ogg')
+                    for root, dirs, files in os.walk(MUSIC_DIR):
+                        for file in files:
+                            if file.lower().endswith(audio_extensions):
+                                existing_files_after.add(file)
+                    print(f"[SNAPSHOT] Found {len(existing_files_after)} files AFTER download", flush=True)
+                except Exception as e:
+                    print(f"[SNAPSHOT] Error after download: {e}", flush=True)
+
+                # New files are the difference
+                new_files_snapshot = existing_files_after - existing_files_before
+                print(f"[SNAPSHOT] Difference (new files): {len(new_files_snapshot)} files", flush=True)
+
+                # Priority: 1) Files from snapshot, 2) Files from output, 3) Recently modified
+                if new_files_snapshot and len(new_files_snapshot) > 0:
+                    downloaded_filenames = list(new_files_snapshot)
+                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} files from snapshot comparison", flush=True)
+                elif output_downloaded_files and len(output_downloaded_files) > 0:
                     downloaded_filenames = output_downloaded_files
-                    print(f"[PLAYLIST] Extracted {len(downloaded_filenames)} files from SpotDL output", flush=True)
+                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} files from SpotDL output", flush=True)
                 else:
                     # Fallback: Find recently modified files
                     recently_modified = find_recently_modified_files(start_time)
                     downloaded_filenames = [item['filename'] for item in recently_modified] if recently_modified else []
-                    print(f"[PLAYLIST] Found {len(downloaded_filenames)} recently modified files", flush=True)
+                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} recently modified files", flush=True)
 
                 print(f"[PLAYLIST] Creating playlist '{playlist_name}' with {len(downloaded_filenames)} files...", flush=True)
 

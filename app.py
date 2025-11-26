@@ -151,24 +151,6 @@ def search_song_in_navidrome(artist, title, retry_count=0):
         print(f"[SEARCH ERROR] Traceback: {traceback.format_exc()}", flush=True)
         return None
 
-def find_existing_playlist_content(m3u_path):
-    """Read existing M3U file to get previously included songs"""
-    existing_songs = []
-
-    try:
-        if os.path.exists(m3u_path):
-            print(f"[M3U] Found existing M3U file, reading content...", flush=True)
-            with open(m3u_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        existing_songs.append(line)
-            print(f"[M3U] Read {len(existing_songs)} songs from existing M3U", flush=True)
-    except Exception as e:
-        print(f"[M3U] Could not read existing M3U: {e}", flush=True)
-
-    return existing_songs
-
 def find_all_available_audio_files():
     """Find all audio files currently available in the music directory"""
     all_files = []
@@ -186,32 +168,6 @@ def find_all_available_audio_files():
         print(f"[M3U ERROR] Error scanning directory: {e}", flush=True)
         return []
 
-def merge_playlist_songs(new_songs, existing_songs, all_available_files):
-    """Merge new songs with existing, keeping only files that exist in filesystem"""
-    # Combine new and existing songs
-    all_songs = list(set(new_songs + existing_songs))
-
-    # Filter to only include songs that actually exist as files
-    valid_songs = []
-    for song in all_songs:
-        if song in all_available_files:
-            valid_songs.append(song)
-        else:
-            # Try to find by partial match (in case filenames changed slightly)
-            song_base = os.path.splitext(song)[0].lower()
-            found = False
-            for available in all_available_files:
-                available_base = os.path.splitext(available)[0].lower()
-                if available_base == song_base:
-                    valid_songs.append(available)
-                    found = True
-                    break
-            if not found:
-                print(f"[M3U] Warning: Song not found in filesystem: {song}", flush=True)
-
-    print(f"[M3U] Merged playlists: {len(new_songs)} new + {len(existing_songs)} existing = {len(valid_songs)} valid total", flush=True)
-    return valid_songs
-
 def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=None):
     """Create M3U playlist file and let Navidrome import it automatically"""
     try:
@@ -220,20 +176,19 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=
         print(f"[M3U] Creating M3U playlist: {playlist_name}", flush=True)
         print(f"[M3U] Newly downloaded files: {len(downloaded_files)} files", flush=True)
 
-        # Generate M3U filename - sanitize playlist name for filename
-        safe_name = "".join(c for c in playlist_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        m3u_filename = f"{safe_name}.m3u"
-        m3u_path = os.path.join(MUSIC_DIR, m3u_filename)
-
-        # Check if this M3U already exists from a previous download
-        existing_songs = find_existing_playlist_content(m3u_path)
-
-        # Get all currently available audio files
+        # Get all currently available audio files in /music/
+        # This is the most reliable approach - use ALL files that exist
+        # If SpotDL failed but the files already exist, they'll still be included
         all_available_files = find_all_available_audio_files()
 
-        # Merge new downloads with existing playlist songs
-        files_to_include = merge_playlist_songs(downloaded_files, existing_songs, all_available_files)
+        # Always use all available files for the playlist
+        # This ensures:
+        # 1. Playlists are complete even if SpotDL partially failed
+        # 2. Retries automatically complete playlists
+        # 3. No loss of songs even if download was interrupted
+        files_to_include = all_available_files
 
+        print(f"[M3U] Using all {len(files_to_include)} available audio files in library", flush=True)
         print(f"[M3U] Total files to include in playlist: {len(files_to_include)}", flush=True)
 
         # Create M3U content with file paths

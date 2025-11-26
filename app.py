@@ -250,9 +250,9 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=
         return False, f"Error creating M3U playlist: {str(e)}"
 
 def extract_playlist_info(output_lines):
-    """Extract playlist name and downloaded songs from spotdl output"""
+    """Extract playlist name and song information from spotdl output"""
     playlist_name = None
-    downloaded_files = []
+    song_info_list = []  # List of (artist, title) tuples
 
     for line in output_lines:
         # Try to detect playlist name - look for patterns like "Found X songs in PlaylistName (Playlist)"
@@ -261,35 +261,96 @@ def extract_playlist_info(output_lines):
             playlist_name = match.group(1).strip()
             print(f"[EXTRACT] Found playlist name: {playlist_name}", flush=True)
 
-        # Try to detect downloaded files from various SpotDL output formats
-        # Look for patterns like:
-        # - "Downloaded: songname.mp3"
-        # - "Saved: songname.flac"
-        # - "✓ songname.mp3"
-        # - File paths in output
+        # SpotDL output format: "artist - title" or "Downloading: artist - title"
+        # Also handles: "✓ artist - title" (already exists)
+        # Also handles: "Downloaded: artist - title"
 
-        # Pattern 1: "Downloaded:" or "Saved:" format
-        if "Downloaded" in line or "Saved" in line:
-            # Try to extract filename with extension
-            match = re.search(r'(?:Downloaded|Saved)[\s:]+(.+\.(?:mp3|m4a|flac|wav|ogg))', line, re.IGNORECASE)
-            if match:
-                filename = match.group(1).strip()
-                # Get just the filename, not the full path
-                filename = os.path.basename(filename)
-                if filename not in downloaded_files:
-                    downloaded_files.append(filename)
-                    print(f"[EXTRACT] Found downloaded file: {filename}", flush=True)
-
-        # Pattern 2: Lines with checkmark and filename (✓ filename.ext)
-        match = re.search(r'✓\s+(.+\.(?:mp3|m4a|flac|wav|ogg))', line, re.IGNORECASE)
+        # Pattern 1: "Downloading: artist - title" or similar action lines
+        match = re.search(r'(?:Downloading|Processing|Downloaded|Saved)[:\s]+(.+?)\s+-\s+(.+?)(?:\s+\(|$)', line, re.IGNORECASE)
         if match:
-            filename = match.group(1).strip()
-            filename = os.path.basename(filename)
-            if filename not in downloaded_files:
-                downloaded_files.append(filename)
-                print(f"[EXTRACT] Found checked file: {filename}", flush=True)
+            artist = match.group(1).strip()
+            title = match.group(2).strip()
+            song_info = (artist, title)
+            if song_info not in song_info_list:
+                song_info_list.append(song_info)
+                print(f"[EXTRACT] Found song: {artist} - {title}", flush=True)
+            continue
 
-    return playlist_name, downloaded_files
+        # Pattern 2: Lines with checkmark "✓ artist - title" (file already exists)
+        match = re.search(r'✓\s+(.+?)\s+-\s+(.+?)(?:\s+\(|$)', line)
+        if match:
+            artist = match.group(1).strip()
+            title = match.group(2).strip()
+            song_info = (artist, title)
+            if song_info not in song_info_list:
+                song_info_list.append(song_info)
+                print(f"[EXTRACT] Found existing song: {artist} - {title}", flush=True)
+            continue
+
+        # Pattern 3: Direct "artist - title" lines (without prefix)
+        # But only if line looks like a song (has " - " and no special chars at start)
+        if ' - ' in line and not line.startswith(('│', '├', '└', '[', ' ', '\t')):
+            match = re.search(r'^(.+?)\s+-\s+(.+?)(?:\s+\(|$)', line)
+            if match:
+                artist = match.group(1).strip()
+                title = match.group(2).strip()
+                # Skip if it looks like a path or URL
+                if '/' not in artist and '\\' not in artist:
+                    song_info = (artist, title)
+                    if song_info not in song_info_list:
+                        song_info_list.append(song_info)
+                        print(f"[EXTRACT] Found song from line: {artist} - {title}", flush=True)
+
+    return playlist_name, song_info_list
+
+def find_songs_by_info(song_info_list):
+    """Find actual music files based on artist/title information"""
+    found_files = []
+    audio_extensions = ('.mp3', '.m4a', '.flac', '.wav', '.ogg')
+
+    print(f"[SEARCH] Looking for {len(song_info_list)} songs in library...", flush=True)
+
+    # Build a map of all audio files in the library
+    all_files = {}
+    try:
+        for root, dirs, files in os.walk(MUSIC_DIR):
+            for file in files:
+                if file.lower().endswith(audio_extensions):
+                    # Normalize filename for matching
+                    file_lower = file.lower()
+                    all_files[file_lower] = file
+    except Exception as e:
+        print(f"[SEARCH ERROR] Error scanning directory: {e}", flush=True)
+        return []
+
+    # For each song from SpotDL output, try to find matching file
+    for artist, title in song_info_list:
+        # SpotDL typically saves files as "Artist - Title.mp3"
+        # Try different combinations to find the file
+
+        # Pattern 1: "Artist - Title.ext"
+        for ext in audio_extensions:
+            filename = f"{artist} - {title}{ext}"
+            filename_lower = filename.lower()
+            if filename_lower in all_files:
+                found_files.append(all_files[filename_lower])
+                print(f"[SEARCH] ✓ Found: {filename}", flush=True)
+                break
+
+        # Pattern 2: Try fuzzy match if exact doesn't work
+        # Look for files containing both artist and title
+        if not any(f.lower() == f"{artist} - {title}".lower() for f in found_files):
+            artist_lower = artist.lower()
+            title_lower = title.lower()
+            for file_lower, original_file in all_files.items():
+                if artist_lower in file_lower and title_lower in file_lower:
+                    if original_file not in found_files:
+                        found_files.append(original_file)
+                        print(f"[SEARCH] ✓ Found (fuzzy): {original_file}", flush=True)
+                        break
+
+    print(f"[SEARCH] Total found: {len(found_files)}/{len(song_info_list)} songs", flush=True)
+    return found_files
 
 def find_recently_modified_files(since_time, limit_count=None):
     """Find music files modified after the given time"""
@@ -414,8 +475,11 @@ def run_spotdl(url, download_id):
 
         output = []
         for line in process.stdout:
-            output.append(line.strip())
+            line_stripped = line.strip()
+            output.append(line_stripped)
             downloads[download_id]["log"] = "\n".join(output[-50:])  # Keep last 50 lines
+            # Print SpotDL output to container logs for debugging
+            print(f"[SPOTDL] {line_stripped}", flush=True)
 
         process.wait()
 
@@ -424,10 +488,12 @@ def run_spotdl(url, download_id):
             if "playlist" in url.lower() or "album" in url.lower():
                 downloads[download_id]["status"] = "creating_playlist"
 
-                # Extract playlist/album name from SpotDL output
-                playlist_name, output_downloaded_files = extract_playlist_info(output)
+                # Extract playlist/album name and song info from SpotDL output
+                playlist_name, song_info_list = extract_playlist_info(output)
                 if not playlist_name:
                     playlist_name = "Downloaded Content"
+
+                print(f"[PLAYLIST] Playlist: {playlist_name}, Songs detected: {len(song_info_list)}", flush=True)
 
                 # Compare files AFTER download with files BEFORE download to find new files
                 existing_files_after = set()
@@ -445,18 +511,25 @@ def run_spotdl(url, download_id):
                 new_files_snapshot = existing_files_after - existing_files_before
                 print(f"[SNAPSHOT] Difference (new files): {len(new_files_snapshot)} files", flush=True)
 
-                # Priority: 1) Files from snapshot, 2) Files from output, 3) Recently modified
+                # Strategy:
+                # 1. If we have new files from snapshot, use those (actually downloaded new)
+                # 2. If we have song info from SpotDL, search for those songs (already existed)
+                # 3. Fallback to recently modified files
+                downloaded_filenames = []
+
                 if new_files_snapshot and len(new_files_snapshot) > 0:
+                    # New files were downloaded
                     downloaded_filenames = list(new_files_snapshot)
-                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} files from snapshot comparison", flush=True)
-                elif output_downloaded_files and len(output_downloaded_files) > 0:
-                    downloaded_filenames = output_downloaded_files
-                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} files from SpotDL output", flush=True)
+                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} NEW files from snapshot", flush=True)
+                elif song_info_list and len(song_info_list) > 0:
+                    # Songs already existed, search for them by artist/title
+                    downloaded_filenames = find_songs_by_info(song_info_list)
+                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} EXISTING files found by song info", flush=True)
                 else:
                     # Fallback: Find recently modified files
                     recently_modified = find_recently_modified_files(start_time)
                     downloaded_filenames = [item['filename'] for item in recently_modified] if recently_modified else []
-                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} recently modified files", flush=True)
+                    print(f"[PLAYLIST] Using {len(downloaded_filenames)} recently modified files (fallback)", flush=True)
 
                 print(f"[PLAYLIST] Creating playlist '{playlist_name}' with {len(downloaded_filenames)} files...", flush=True)
 

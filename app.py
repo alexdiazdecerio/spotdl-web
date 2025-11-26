@@ -151,68 +151,66 @@ def search_song_in_navidrome(artist, title, retry_count=0):
         print(f"[SEARCH ERROR] Traceback: {traceback.format_exc()}", flush=True)
         return None
 
-def extract_all_songs_from_spotdl_output(output_lines):
-    """Extract all songs from SpotDL output, both downloaded and skipped"""
-    songs = []
+def find_existing_playlist_content(m3u_path):
+    """Read existing M3U file to get previously included songs"""
+    existing_songs = []
 
     try:
-        # SpotDL outputs lines like:
-        # "Downloading: Artist - Title"
-        # "Skipping: Artist - Title (already exists)"
-        # "Downloaded: /path/to/file.mp3"
-
-        for line in output_lines:
-            line_lower = line.lower()
-
-            # Match downloaded or skipped songs
-            if "downloading:" in line_lower or "skipping:" in line_lower or "downloaded" in line_lower:
-                # Try to extract filename if it's a path
-                if ".mp3" in line or ".m4a" in line or ".flac" in line or ".wav" in line or ".ogg" in line:
-                    # Extract just the filename from the full path
-                    parts = line.split('/')
-                    filename = parts[-1].strip()
-                    if filename and filename not in songs:
-                        songs.append(filename)
-                        print(f"[EXTRACT] Found song: {filename}", flush=True)
-
-        print(f"[EXTRACT] Extracted {len(songs)} unique songs from SpotDL output", flush=True)
-        return songs
+        if os.path.exists(m3u_path):
+            print(f"[M3U] Found existing M3U file, reading content...", flush=True)
+            with open(m3u_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        existing_songs.append(line)
+            print(f"[M3U] Read {len(existing_songs)} songs from existing M3U", flush=True)
     except Exception as e:
-        print(f"[EXTRACT ERROR] {e}", flush=True)
-        return []
+        print(f"[M3U] Could not read existing M3U: {e}", flush=True)
 
-def find_songs_in_directory(song_names):
-    """Find actual audio files matching the song names"""
-    found_files = []
+    return existing_songs
+
+def find_all_available_audio_files():
+    """Find all audio files currently available in the music directory"""
+    all_files = []
     audio_extensions = ('.mp3', '.m4a', '.flac', '.wav', '.ogg')
 
     try:
-        # Get all files in music directory
-        all_files = []
         for root, dirs, files in os.walk(MUSIC_DIR):
             for file in files:
                 if file.lower().endswith(audio_extensions):
                     all_files.append(file)
 
-        # Match requested songs
-        for song_name in song_names:
-            # Direct match
-            if song_name in all_files:
-                found_files.append(song_name)
-            else:
-                # Try fuzzy matching (in case filename changed slightly)
-                song_base = os.path.splitext(song_name)[0].lower()
-                for existing_file in all_files:
-                    existing_base = os.path.splitext(existing_file)[0].lower()
-                    if existing_base == song_base:
-                        found_files.append(existing_file)
-                        break
-
-        print(f"[FIND] Matched {len(found_files)} songs from requested {len(song_names)}", flush=True)
-        return found_files
+        print(f"[M3U] Scanned directory, found {len(all_files)} total audio files", flush=True)
+        return all_files
     except Exception as e:
-        print(f"[FIND ERROR] {e}", flush=True)
+        print(f"[M3U ERROR] Error scanning directory: {e}", flush=True)
         return []
+
+def merge_playlist_songs(new_songs, existing_songs, all_available_files):
+    """Merge new songs with existing, keeping only files that exist in filesystem"""
+    # Combine new and existing songs
+    all_songs = list(set(new_songs + existing_songs))
+
+    # Filter to only include songs that actually exist as files
+    valid_songs = []
+    for song in all_songs:
+        if song in all_available_files:
+            valid_songs.append(song)
+        else:
+            # Try to find by partial match (in case filenames changed slightly)
+            song_base = os.path.splitext(song)[0].lower()
+            found = False
+            for available in all_available_files:
+                available_base = os.path.splitext(available)[0].lower()
+                if available_base == song_base:
+                    valid_songs.append(available)
+                    found = True
+                    break
+            if not found:
+                print(f"[M3U] Warning: Song not found in filesystem: {song}", flush=True)
+
+    print(f"[M3U] Merged playlists: {len(new_songs)} new + {len(existing_songs)} existing = {len(valid_songs)} valid total", flush=True)
+    return valid_songs
 
 def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=None):
     """Create M3U playlist file and let Navidrome import it automatically"""
@@ -222,18 +220,19 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=
         print(f"[M3U] Creating M3U playlist: {playlist_name}", flush=True)
         print(f"[M3U] Newly downloaded files: {len(downloaded_files)} files", flush=True)
 
-        # Try to extract all songs from SpotDL output (both new and skipped)
-        all_requested_songs = []
-        if spotdl_output:
-            all_requested_songs = extract_all_songs_from_spotdl_output(spotdl_output)
+        # Generate M3U filename - sanitize playlist name for filename
+        safe_name = "".join(c for c in playlist_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        m3u_filename = f"{safe_name}.m3u"
+        m3u_path = os.path.join(MUSIC_DIR, m3u_filename)
 
-        # If we extracted songs from output, use those; otherwise use only newly downloaded
-        if len(all_requested_songs) > 0:
-            print(f"[M3U] Using {len(all_requested_songs)} songs extracted from SpotDL output", flush=True)
-            files_to_include = find_songs_in_directory(all_requested_songs)
-        else:
-            print(f"[M3U] Using {len(downloaded_files)} newly downloaded files", flush=True)
-            files_to_include = downloaded_files
+        # Check if this M3U already exists from a previous download
+        existing_songs = find_existing_playlist_content(m3u_path)
+
+        # Get all currently available audio files
+        all_available_files = find_all_available_audio_files()
+
+        # Merge new downloads with existing playlist songs
+        files_to_include = merge_playlist_songs(downloaded_files, existing_songs, all_available_files)
 
         print(f"[M3U] Total files to include in playlist: {len(files_to_include)}", flush=True)
 
@@ -246,11 +245,6 @@ def create_playlist_in_navidrome(playlist_name, downloaded_files, spotdl_output=
 
         m3u_content = '\n'.join(m3u_lines)
         print(f"[M3U] M3U playlist will contain {len(files_to_include)} songs", flush=True)
-
-        # Generate M3U filename - sanitize playlist name for filename
-        safe_name = "".join(c for c in playlist_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        m3u_filename = f"{safe_name}.m3u"
-        m3u_path = os.path.join(MUSIC_DIR, m3u_filename)
 
         # Write M3U file to music directory
         print(f"[M3U] Writing M3U file to: {m3u_path}", flush=True)
@@ -428,30 +422,29 @@ def run_spotdl(url, download_id):
 
                 # Find recently modified files (files downloaded during this session)
                 recently_modified = find_recently_modified_files(start_time)
+                downloaded_filenames = [item['filename'] for item in recently_modified] if recently_modified else []
 
-                if recently_modified and len(recently_modified) > 0:
-                    downloaded_filenames = [item['filename'] for item in recently_modified]
+                # Always try to create/update playlist for playlists and albums
+                # Even if no new files were downloaded, the M3U might exist from previous attempts
+                # and we want to ensure it's complete
+                print(f"[PLAYLIST] Found {len(downloaded_filenames)} new files, attempting playlist creation...", flush=True)
 
-                    # Start Navidrome scan and wait for it to complete
-                    downloads[download_id]["log"] += "\nEscaneando biblioteca de Navidrome..."
-                    start_navidrome_scan()
-                    wait_for_navidrome_scan()
-                    downloads[download_id]["log"] += "\nEscaneo completado. Creando playlist..."
+                # Start Navidrome scan and wait for it to complete
+                downloads[download_id]["log"] += "\nEscaneando biblioteca de Navidrome..."
+                start_navidrome_scan()
+                wait_for_navidrome_scan()
+                downloads[download_id]["log"] += "\nEscaneo completado. Creando playlist..."
 
-                    # Try to create playlist with downloaded files
-                    success, message = create_playlist_in_navidrome(playlist_name, downloaded_filenames, output)
+                # Try to create playlist with downloaded files
+                success, message = create_playlist_in_navidrome(playlist_name, downloaded_filenames, output)
 
-                    if success:
-                        downloads[download_id]["status"] = "completed"
-                        downloads[download_id]["playlist_created"] = True
-                        downloads[download_id]["playlist_name"] = playlist_name
-                    else:
-                        downloads[download_id]["status"] = "completed_no_playlist"
-                        downloads[download_id]["playlist_error"] = message
+                if success:
+                    downloads[download_id]["status"] = "completed"
+                    downloads[download_id]["playlist_created"] = True
+                    downloads[download_id]["playlist_name"] = playlist_name
                 else:
-                    # No new files were downloaded (duplicates or existing files)
                     downloads[download_id]["status"] = "completed_no_playlist"
-                    downloads[download_id]["playlist_error"] = "All songs already exist (duplicates)"
+                    downloads[download_id]["playlist_error"] = message
             else:
                 downloads[download_id]["status"] = "completed"
         else:
